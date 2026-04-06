@@ -2,57 +2,93 @@ const router = require('express').Router();
 const db = require('../config/db');
 const dayjs = require('dayjs');
 
-// Called by the TechMag agent when a fingerprint is recognized
-// Body: { fingerprint_id: <int> }  OR  { employee_id: <int> }
-router.post('/event', async (req, res) => {
-  const { fingerprint_id, employee_id, source } = req.body;
+const MINIMUM_INTERVAL_HOURS = 10;
 
-  try {
-    let empId = employee_id;
+async function resolveEmployee(fingerprintId, employeeId) {
+  if (employeeId) return employeeId;
+  const [rows] = await db.query(
+    'SELECT id FROM employees WHERE fingerprint_id=? AND active=1',
+    [fingerprintId]
+  );
+  if (!rows.length) return null;
+  return rows[0].id;
+}
 
-    if (!empId && fingerprint_id != null) {
-      const [rows] = await db.query(
-        'SELECT id FROM employees WHERE fingerprint_id=? AND active=1',
-        [fingerprint_id]
-      );
-      if (!rows.length) return res.status(404).json({ error: 'Funcionário não encontrado para esse ID de digital' });
-      empId = rows[0].id;
-    }
+async function registerClock(empId, source, res) {
+  const today = dayjs().format('YYYY-MM-DD');
 
-    if (!empId) return res.status(400).json({ error: 'fingerprint_id ou employee_id obrigatório' });
+  const [records] = await db.query(
+    `SELECT type, recorded_at FROM time_records
+     WHERE employee_id=? AND DATE(recorded_at)=?
+     ORDER BY recorded_at ASC`,
+    [empId, today]
+  );
 
-    // Determine type: if last record today is 'entry', next is 'exit', and vice-versa
-    const today = dayjs().format('YYYY-MM-DD');
-    const [last] = await db.query(
-      `SELECT type FROM time_records
-       WHERE employee_id=? AND DATE(recorded_at)=?
-       ORDER BY recorded_at DESC LIMIT 1`,
-      [empId, today]
+  const [[emp]] = await db.query('SELECT name FROM employees WHERE id=?', [empId]);
+
+  if (records.length === 0) {
+    // First punch of the day → entry
+    await db.query(
+      'INSERT INTO time_records (employee_id, type, source) VALUES (?, ?, ?)',
+      [empId, 'entry', source]
     );
-    const type = (!last.length || last[0].type === 'exit') ? 'entry' : 'exit';
+    return res.json({ ok: true, type: 'entry', employee: emp.name, recorded_at: new Date() });
+  }
+
+  if (records.length === 1 && records[0].type === 'entry') {
+    // Second punch → check 10h minimum
+    const entryTime = new Date(records[0].recorded_at);
+    const now = new Date();
+    const diffMs = now - entryTime;
+    const diffH = diffMs / 3600000;
+
+    if (diffH < MINIMUM_INTERVAL_HOURS) {
+      const remaining = MINIMUM_INTERVAL_HOURS - diffH;
+      const h = Math.floor(remaining);
+      const m = Math.round((remaining - h) * 60);
+      const waitMsg = h > 0 ? `${h}h${m > 0 ? ` ${m}min` : ''}` : `${m}min`;
+      return res.status(400).json({
+        error: `Saída não permitida ainda. Aguarde mais ${waitMsg}.`,
+        entry_at: records[0].recorded_at,
+        wait_hours: parseFloat(remaining.toFixed(2)),
+      });
+    }
 
     await db.query(
       'INSERT INTO time_records (employee_id, type, source) VALUES (?, ?, ?)',
-      [empId, type, source || 'biometric']
+      [empId, 'exit', source]
     );
+    return res.json({ ok: true, type: 'exit', employee: emp.name, recorded_at: new Date() });
+  }
 
-    const [[emp]] = await db.query('SELECT name FROM employees WHERE id=?', [empId]);
-    res.json({ ok: true, employee: emp.name, type, recorded_at: new Date() });
+  // Already has both entry and exit today
+  return res.status(400).json({
+    error: 'Ponto já completo para hoje (entrada e saída registrados).',
+    employee: emp.name,
+  });
+}
+
+// Called by the TechMag agent: { fingerprint_id: <int> }
+router.post('/event', async (req, res) => {
+  const { fingerprint_id, source } = req.body;
+  if (fingerprint_id == null) return res.status(400).json({ error: 'fingerprint_id obrigatório' });
+
+  try {
+    const empId = await resolveEmployee(fingerprint_id, null);
+    if (!empId) return res.status(404).json({ error: 'Digital não reconhecida. Funcionário não cadastrado.' });
+    await registerClock(empId, source || 'biometric', res);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Manual clock (from browser)
+// Manual clock from browser: { employee_id, type? }
 router.post('/manual', async (req, res) => {
-  const { employee_id, type } = req.body;
-  if (!employee_id || !type) return res.status(400).json({ error: 'employee_id e type obrigatórios' });
+  const { employee_id } = req.body;
+  if (!employee_id) return res.status(400).json({ error: 'employee_id obrigatório' });
+
   try {
-    await db.query(
-      'INSERT INTO time_records (employee_id, type, source) VALUES (?, ?, ?)',
-      [employee_id, type, 'manual']
-    );
-    res.json({ ok: true });
+    await registerClock(parseInt(employee_id), 'manual', res);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

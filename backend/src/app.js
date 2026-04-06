@@ -9,6 +9,7 @@ app.use(express.json());
 app.use('/api/employees', require('./routes/employees'));
 app.use('/api/clock',     require('./routes/clock'));
 app.use('/api/reports',   require('./routes/reports'));
+app.use('/api/enrollment', require('./routes/enrollment'));
 
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 
