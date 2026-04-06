@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "80:80"
+    environment:
+      DB_HOST:     mysql
+      DB_PORT:     3306
+      DB_USER:     ponto
+      DB_PASSWORD: pontosenha
+      DB_NAME:     ponto
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootsenha
+      MYSQL_DATABASE:      ponto
+      MYSQL_USER:          ponto
+      MYSQL_PASSWORD:      pontosenha
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  mysql_data:

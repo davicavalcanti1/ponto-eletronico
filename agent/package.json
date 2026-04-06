@@ -1,0 +1,13 @@
+{
+  "name": "ponto-agent",
+  "version": "1.0.0",
+  "description": "Agente local Windows para leitor TechMag",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "node-hid": "^3.0.0",
+    "node-fetch": "^2.7.0"
+  }
+}
